@@ -1,0 +1,814 @@
+<?php
+/**
+ * Operations Manager Dashboard controller for handling operations manager views
+ */
+
+// Check if direct access
+if (!defined('ROOT_PATH')) {
+    die('Direct access not permitted');
+}
+
+// Include required files
+use Services\UserService;
+use Services\BranchService;
+use Services\CarbonFootprintService;
+use Services\ReportGenerationService;
+use Models\User;
+use Models\Branch;
+use Utils\PasswordHasher;
+use Exceptions\DataAccessException;
+use Exceptions\UserNotFoundException;
+use Exceptions\DuplicateEmailException;
+use Dao\Impl\CityDAOImpl;
+
+/**
+ * Display operations manager dashboard
+ */
+function dashboard() {
+    global $container;
+    global $db;
+    
+    // Check if database connection is available
+    if (!$db) {
+        $_SESSION['error'] = 'Database connection error. Please check your database settings.';
+        header('Location: ' . APP_URL . '/?controller=auth&action=login');
+        exit;
+    }
+    
+    // Check if user is logged in and has the correct role
+    if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'OPManager') {
+        $_SESSION['error'] = 'You must be logged in as an Operations Manager to access this page.';
+        header('Location: ' . APP_URL . '/?controller=auth&action=login');
+        exit;
+    }
+    
+    // Process form submissions
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        handleFormSubmission();
+    }
+    
+    try {
+        // Get services from container
+        $userService = $container->get(UserService::class);
+        $branchService = $container->get(BranchService::class);
+        
+        // Prepare data for dashboard
+        $data = [
+            'users' => $userService->getAllUsers(),
+            'branches' => $branchService->getAllBranches(),
+            'cities' => [],
+            'active_tab' => $_SESSION['active_tab'] ?? 'users' // Add active tab tracking
+        ];
+        
+        // Get cities from the CityDAO if available
+        if ($container->has(CityDAOImpl::class)) {
+            try {
+                $cityDAO = $container->get(CityDAOImpl::class);
+                $data['cities'] = $cityDAO->getAll();
+            } catch (Exception $e) {
+                error_log("Error loading cities: " . $e->getMessage());
+            }
+        }
+        
+        // Check if we have CarbonFootprintService
+        if ($container->has(CarbonFootprintService::class)) {
+            $carbonFootprintService = $container->get(CarbonFootprintService::class);
+            $data['metrics'] = $carbonFootprintService->getOverallMetrics();
+        } else {
+            $data['metrics'] = [];
+        }
+        
+        // Add extra production/packaging/distribution data if available
+        if ($container->has('ProductionService')) {
+            $productionService = $container->get('ProductionService');
+            if ($productionService) {
+                $allData = $productionService->getAll();
+                $data['production'] = $allData['production'] ?? [];
+            }
+        }
+        
+        if ($container->has('PackagingService')) {
+            $packagingService = $container->get('PackagingService');
+            if ($packagingService) {
+                $allData = $packagingService->getAll();
+                $data['packaging'] = $allData['packaging'] ?? [];
+            }
+        }
+        
+        if ($container->has('DistributionService')) {
+            $distributionService = $container->get('DistributionService');
+            if ($distributionService) {
+                $allData = $distributionService->getAll();
+                $data['distribution'] = $allData['distribution'] ?? [];
+            }
+        }
+        
+        // Display dashboard
+        $pageTitle = 'Operations Manager Dashboard';
+        
+        // Directly include the dashboard view without layout
+        include VIEWS_PATH . '/dashboard/op_manager.php';
+        
+    } catch (Exception $e) {
+        error_log("OP Manager Dashboard error: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+        $_SESSION['error'] = 'Error loading dashboard data: ' . $e->getMessage();
+        header('Location: ' . APP_URL . '/?controller=auth&action=login');
+        exit;
+    }
+}
+
+/**
+ * Handle form submissions
+ */
+function handleFormSubmission() {
+        $action = $_POST['action'] ?? '';
+    
+    // Save the active tab to session to maintain state after form submission
+    if (isset($_POST['tab'])) {
+        $_SESSION['active_tab'] = $_POST['tab'];
+    } else {
+        // Try to determine tab from the action
+        if (strpos($action, 'user') !== false) {
+            $_SESSION['active_tab'] = 'users';
+        } elseif (strpos($action, 'branch') !== false) {
+            $_SESSION['active_tab'] = 'branches';
+        } elseif (strpos($action, 'production') !== false) {
+            $_SESSION['active_tab'] = 'production';
+        } elseif (strpos($action, 'packaging') !== false) {
+            $_SESSION['active_tab'] = 'packaging';
+        } elseif (strpos($action, 'distribution') !== false) {
+            $_SESSION['active_tab'] = 'distribution';
+        } elseif (strpos($action, 'report') !== false || strpos($action, 'generate') !== false) {
+            $_SESSION['active_tab'] = 'report';
+        }
+    }
+    
+        try {
+            switch ($action) {
+                case 'add_user':
+                addUser();
+                    break;
+                case 'update_user':
+                updateUser();
+                    break;
+                case 'save_user':
+                updateUser();
+                    break;
+                case 'delete_user':
+                deleteUser();
+                    break;
+                case 'add_branch':
+                addBranch();
+                break;
+            case 'update_branch':
+                updateBranch();
+                break;
+            case 'save_branch':
+                updateBranch();
+                break;
+            case 'delete_branch':
+                deleteBranch();
+                break;
+            case 'reset_password':
+                resetPassword();
+                break;
+            case 'update_production':
+                updateProduction();
+                break;
+            case 'save_production':
+                updateProduction();
+                break;
+            case 'delete_production':
+                deleteProduction();
+                break;
+            case 'update_packaging':
+                updatePackaging();
+                break;
+            case 'save_packaging':
+                updatePackaging();
+                break;
+            case 'delete_packaging':
+                deletePackaging();
+                break;
+            case 'update_distribution':
+                updateDistribution();
+                break;
+            case 'save_distribution':
+                updateDistribution();
+                break;
+            case 'delete_distribution':
+                deleteDistribution();
+                break;
+            case 'generate_report':
+            case 'generate_branch_report': // Handle both versions of the action
+                generateBranchReport();
+                    break;
+            default:
+                $_SESSION['flash_message'] = 'Invalid action: ' . $action;
+                $_SESSION['flash_type'] = 'danger';
+            }
+        } catch (Exception $e) {
+        error_log("Form submission error: " . $e->getMessage());
+        $_SESSION['flash_message'] = 'Error: ' . $e->getMessage();
+        $_SESSION['flash_type'] = 'danger';
+    }
+}
+
+/**
+ * Add a new user
+ */
+function addUser() {
+    global $container;
+    
+    // Validate input
+    $name = $_POST['name'] ?? '';
+    $role = $_POST['role'] ?? '';
+    $email = $_POST['email'] ?? '';
+    $password = $_POST['password'] ?? '';
+    $branchId = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : null;
+    
+    if (empty($name) || empty($role) || empty($email) || empty($password)) {
+        throw new Exception('All fields are required');
+    }
+    
+    if ($role === 'BranchUser' && empty($branchId)) {
+        throw new Exception('Branch selection is required for Branch Users');
+    }
+    
+    // Create user
+    $user = new User();
+    $user->userName = $name;
+    $user->userRole = $role;
+    $user->userEmail = $email;
+    $user->password = $password; // Will be hashed by the service
+    $user->branchID = $branchId;
+    $user->forcePasswordChange = true;
+    
+    // Save user
+    $userService = $container->get(UserService::class);
+    $result = $userService->saveUser($user);
+    
+    if ($result['success']) {
+        $_SESSION['flash_message'] = $result['message'] ?? 'User added successfully';
+    $_SESSION['flash_type'] = 'success';
+        echo '<div class="alert alert-success">Added successfully</div>';
+    } else {
+        $_SESSION['flash_message'] = $result['message'] ?? 'Failed to add user';
+        $_SESSION['flash_type'] = 'danger';
+        echo '<div class="alert alert-danger">Failed to add</div>';
+    }
+}
+
+/**
+ * Update an existing user
+ */
+function updateUser() {
+    global $container;
+    
+    // Validate input
+    $userId = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+    $name = $_POST['name'] ?? '';
+    $role = $_POST['role'] ?? '';
+    $email = $_POST['email'] ?? '';
+    $branchId = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : null;
+    
+    if (empty($userId) || empty($name) || empty($role) || empty($email)) {
+        throw new Exception('All fields are required');
+    }
+    
+    if ($role === 'BranchUser' && empty($branchId)) {
+        throw new Exception('Branch selection is required for Branch Users');
+    }
+    
+    // Get user service
+    $userService = $container->get(UserService::class);
+    
+    // Get existing user
+    $user = $userService->getUserById($userId);
+    if (!$user) {
+        throw new Exception('User not found');
+    }
+    
+    // Update user
+    $user->userName = $name;
+    $user->userRole = $role;
+    $user->userEmail = $email;
+    $user->branchID = $branchId;
+    
+    // Save user
+    $userService = $container->get(UserService::class);
+    $result = $userService->saveUser($user);
+    
+    if ($result['success']) {
+        $_SESSION['flash_message'] = $result['message'] ?? 'User updated successfully';
+    $_SESSION['flash_type'] = 'success';
+        echo '<div class="alert alert-success">Saved successfully</div>';
+    } else {
+        $_SESSION['flash_message'] = $result['message'] ?? 'Failed to update user';
+        $_SESSION['flash_type'] = 'danger';
+        echo '<div class="alert alert-danger">Failed to save</div>';
+    }
+}
+
+/**
+ * Delete a user
+ */
+function deleteUser() {
+    global $container;
+    
+    // Validate input
+    $userId = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+    
+    if (empty($userId)) {
+        throw new Exception('User ID is required');
+    }
+    
+    // Get user service
+    $userService = $container->get(UserService::class);
+    
+    // Get existing user
+    $user = $userService->getUserById($userId);
+    if (!$user) {
+        throw new Exception('User not found');
+    }
+    
+    // Delete user
+    $userService = $container->get(UserService::class);
+    $result = $userService->deleteUser($user);
+    
+    if ($result['success']) {
+        $_SESSION['flash_message'] = $result['message'] ?? 'User deleted successfully';
+    $_SESSION['flash_type'] = 'success';
+        echo '<div class="alert alert-success">Deleted successfully</div>';
+    } else {
+        $_SESSION['flash_message'] = $result['message'] ?? 'Failed to delete user';
+        $_SESSION['flash_type'] = 'danger';
+        echo '<div class="alert alert-danger">Failed to delete</div>';
+    }
+}
+
+/**
+ * Add a new branch
+ */
+function addBranch() {
+    global $container;
+    
+    // Validate input
+    $cityId = isset($_POST['city_id']) ? (int)$_POST['city_id'] : 0;
+    $location = $_POST['location'] ?? '';
+    $employees = isset($_POST['num_employees']) ? (int)$_POST['num_employees'] : 0;
+    
+    if (empty($cityId) || empty($location) || empty($employees)) {
+        throw new Exception('All fields are required');
+    }
+    
+    // Create branch
+    $branch = new Branch(0, $cityId, $location, $employees);
+    
+    // Save branch
+    $branchService = $container->get(BranchService::class);
+    $branchId = $branchService->saveBranch($branch);
+    
+    // Create initial production, packaging, and distribution records for the new branch
+    if ($branchId) {
+        $userId = $_SESSION['user_id'] ?? 0;
+        
+        // Get services
+        $carbonFootprintService = $container->get(CarbonFootprintService::class);
+        
+        // Add default production record
+        $carbonFootprintService->addProduction(
+            $branchId, 
+            $userId, 
+            'Default Supplier', 
+            'Arabica Beans', 
+            'Ground', 
+            100.0, 
+            date('Y-m-d')
+        );
+        
+        // Add default packaging record
+        $carbonFootprintService->addPackaging(
+            $branchId,
+            $userId,
+            50.0,
+            date('Y-m-d')
+        );
+        
+        // Add default distribution record
+        $carbonFootprintService->addDistribution(
+            $branchId,
+            $userId,
+            'Minivan',
+            2,
+            100.0,
+            date('Y-m-d')
+        );
+    }
+    
+    $_SESSION['flash_message'] = 'Branch added successfully with initial carbon footprint records';
+    $_SESSION['flash_type'] = 'success';
+}
+
+/**
+ * Update an existing branch
+ */
+function updateBranch() {
+    global $container;
+    
+    // Validate input
+    $branchId = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : 0;
+    $cityId = isset($_POST['city_id']) ? (int)$_POST['city_id'] : 0;
+    $location = $_POST['location'] ?? '';
+    $employees = isset($_POST['num_employees']) ? (int)$_POST['num_employees'] : 0;
+    
+    if (empty($branchId) || empty($cityId) || empty($location) || empty($employees)) {
+        throw new Exception('All fields are required');
+    }
+    
+    // Get branch service
+    $branchService = $container->get(BranchService::class);
+    
+    // Get existing branch
+    $branch = $branchService->getBranchById($branchId);
+    if (!$branch) {
+        throw new Exception('Branch not found');
+    }
+    
+    // Update branch
+    $branch->setCityId($cityId);
+    $branch->setLocation($location);
+    $branch->setNumberOfEmployees($employees);
+    
+    // Save branch
+    $branchService->saveBranch($branch);
+    
+    $_SESSION['flash_message'] = 'Branch updated successfully';
+    $_SESSION['flash_type'] = 'success';
+}
+
+/**
+ * Delete a branch
+ */
+function deleteBranch() {
+    global $container;
+    
+    // Validate input
+    $branchId = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : 0;
+    
+    if (empty($branchId)) {
+        throw new Exception('Branch ID is required');
+    }
+    
+    // Get branch service
+    $branchService = $container->get(BranchService::class);
+    
+    // Get existing branch
+    $branch = $branchService->getBranchById($branchId);
+    if (!$branch) {
+        throw new Exception('Branch not found');
+    }
+    
+    // Delete branch
+    $branchService->deleteBranch($branch);
+    
+    $_SESSION['flash_message'] = 'Branch deleted successfully';
+    $_SESSION['flash_type'] = 'success';
+}
+
+/**
+ * Reset a user's password
+ */
+function resetPassword() {
+    global $container;
+    
+    // Validate input
+    $userId = isset($_POST['user_id']) ? (int)$_POST['user_id'] : 0;
+    
+    if (empty($userId)) {
+        throw new Exception('User ID is required');
+    }
+    
+    // Get user service
+    $userService = $container->get(UserService::class);
+    
+    // Get existing user
+    $user = $userService->getUserById($userId);
+    if (!$user) {
+        throw new Exception('User not found');
+    }
+    
+    // Generate temporary password
+    $tempPassword = generateRandomPassword();
+    
+    // Update user with temporary password
+    $user->password = $tempPassword;
+    $user->forcePasswordChange = true;
+    $userService->saveUser($user);
+    
+    $_SESSION['flash_message'] = 'Temporary password for ' . $user->userEmail . ': ' . $tempPassword;
+    $_SESSION['flash_type'] = 'success';
+}
+
+/**
+ * Generate a random password
+ * 
+ * @return string Random password
+ */
+function generateRandomPassword() {
+    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    $password = '';
+    $length = 12;
+    
+    for ($i = 0; $i < $length; $i++) {
+        $password .= $chars[random_int(0, strlen($chars) - 1)];
+    }
+    
+    return $password;
+}
+
+// Production records are added automatically when a branch is created
+
+/**
+ * Update an existing production record
+ */
+function updateProduction() {
+    global $container;
+    
+    // Validate input
+    $productionId = isset($_POST['production_id']) ? (int)$_POST['production_id'] : 0;
+    $supplier = $_POST['supplier'] ?? '';
+    $coffeeType = $_POST['coffee_type'] ?? '';
+    $productType = $_POST['product_type'] ?? '';
+    $quantity = isset($_POST['quantity']) ? (float)$_POST['quantity'] : 0;
+    $date = $_POST['production_date'] ?? '';
+    
+    if (empty($productionId) || empty($supplier) || empty($coffeeType) || 
+        empty($productType) || empty($quantity) || empty($date)) {
+        throw new Exception('All fields are required');
+    }
+    
+    // Get production service
+    $productionService = $container->get('ProductionService');
+    
+    // Get existing production record
+    $production = $productionService->getProductionById($productionId);
+    if (!$production) {
+        throw new Exception('Production record not found');
+    }
+    
+    // Update production record fields
+    $production->setSupplier($supplier);
+    $production->setCoffeeType($coffeeType);
+    $production->setProductType($productType);
+    $production->setProductionQuantitiesOfCoffeeKG($quantity);
+    $production->setActivityDate(new \DateTime($date));
+    // Explicitly ensure we're using the current user ID
+    $production->setUserId($_SESSION['user_id']);
+    
+    try {
+    // Save updated production record
+    $productionService->updateProduction($production);
+    
+        // Use consistent session variable names
+        $_SESSION['flash_message'] = 'Production record updated successfully';
+        $_SESSION['flash_type'] = 'success';
+    } catch (Exception $e) {
+        $_SESSION['flash_message'] = 'Failed to update production: ' . $e->getMessage();
+        $_SESSION['flash_type'] = 'danger';
+    }
+}
+
+/**
+ * Delete a production record
+ */
+function deleteProduction() {
+    global $container;
+    
+    // Validate input
+    $productionId = isset($_POST['production_id']) ? (int)$_POST['production_id'] : 0;
+    
+    if (empty($productionId)) {
+        throw new Exception('Production ID is required');
+    }
+    
+    // Get production service
+    $productionService = $container->get('ProductionService');
+    
+    // Delete production record
+    $productionService->deleteProduction($productionId);
+    
+    $_SESSION['flash_message'] = 'Production record deleted successfully';
+    $_SESSION['flash_type'] = 'success';
+}
+
+// Packaging records are added automatically when a branch is created
+
+/**
+ * Update an existing packaging record
+ */
+function updatePackaging() {
+    global $container;
+    
+    // Validate input
+    $packagingId = isset($_POST['packaging_id']) ? (int)$_POST['packaging_id'] : 0;
+    $waste = isset($_POST['packaging_waste']) ? (float)$_POST['packaging_waste'] : 0;
+    $date = $_POST['packaging_date'] ?? '';
+    
+    if (empty($packagingId) || $waste < 0 || empty($date)) {
+        throw new Exception('All fields are required and waste must be non-negative');
+    }
+    
+    // Get packaging service
+    $packagingService = $container->get('PackagingService');
+    
+    // Get existing packaging record
+    $packaging = $packagingService->getPackagingById($packagingId);
+    if (!$packaging) {
+        throw new Exception('Packaging record not found');
+    }
+    
+    // Update packaging record fields
+    $packaging->setPackagingWasteKG($waste);
+    $packaging->setActivityDate(new \DateTime($date));
+    
+    try {
+    // Save updated packaging record
+    $packagingService->updatePackaging($packaging);
+    
+        // Use consistent session variable names
+        $_SESSION['flash_message'] = 'Packaging record updated successfully';
+        $_SESSION['flash_type'] = 'success';
+    } catch (Exception $e) {
+        $_SESSION['flash_message'] = 'Failed to update packaging: ' . $e->getMessage();
+        $_SESSION['flash_type'] = 'danger';
+    }
+}
+
+/**
+ * Delete a packaging record
+ */
+function deletePackaging() {
+    global $container;
+    
+    // Validate input
+    $packagingId = isset($_POST['packaging_id']) ? (int)$_POST['packaging_id'] : 0;
+    
+    if (empty($packagingId)) {
+        throw new Exception('Packaging ID is required');
+    }
+    
+    // Get packaging service
+    $packagingService = $container->get('PackagingService');
+    
+    // Delete packaging record
+    $packagingService->deletePackaging($packagingId);
+    
+    $_SESSION['flash_message'] = 'Packaging record deleted successfully';
+    $_SESSION['flash_type'] = 'success';
+}
+
+// Distribution records are added automatically when a branch is created
+
+/**
+ * Update an existing distribution record
+ */
+function updateDistribution() {
+    global $container;
+    
+    // Validate input
+    $distributionId = isset($_POST['distribution_id']) ? (int)$_POST['distribution_id'] : 0;
+    $vehicleType = $_POST['vehicle_type'] ?? '';
+    $numberOfVehicles = isset($_POST['num_vehicles']) ? (int)$_POST['num_vehicles'] : 0;
+    $distancePerVehicle = isset($_POST['distance_per_vehicle']) ? (float)$_POST['distance_per_vehicle'] : 0;
+    $date = $_POST['distribution_date'] ?? '';
+    
+    if (empty($distributionId) || empty($vehicleType) || 
+        $numberOfVehicles <= 0 || $distancePerVehicle <= 0 || empty($date)) {
+        throw new Exception('All fields are required, number of vehicles and distance must be positive');
+    }
+    
+    // Get distribution service
+    $distributionService = $container->get('DistributionService');
+    
+    // Get existing distribution record
+    $distribution = $distributionService->getDistributionById($distributionId);
+    if (!$distribution) {
+        throw new Exception('Distribution record not found');
+    }
+    
+    // Update distribution record fields
+    $distribution->setVehicleType($vehicleType);
+    $distribution->setNumberOfVehicles($numberOfVehicles);
+    $distribution->setDistancePerVehicleKM($distancePerVehicle);
+    $distribution->setActivityDate(new \DateTime($date));
+    
+    try {
+    // Save updated distribution record
+    $distributionService->updateDistribution($distribution);
+    
+        // Use consistent session variable names
+        $_SESSION['flash_message'] = 'Distribution record updated successfully';
+        $_SESSION['flash_type'] = 'success';
+    } catch (Exception $e) {
+        $_SESSION['flash_message'] = 'Failed to update distribution: ' . $e->getMessage();
+        $_SESSION['flash_type'] = 'danger';
+    }
+}
+
+/**
+ * Delete a distribution record
+ */
+function deleteDistribution() {
+    global $container;
+    
+    // Validate input
+    $distributionId = isset($_POST['distribution_id']) ? (int)$_POST['distribution_id'] : 0;
+    
+    if (empty($distributionId)) {
+        throw new Exception('Distribution ID is required');
+    }
+    
+    // Get distribution service
+    $distributionService = $container->get('DistributionService');
+    
+    // Delete distribution record
+    $distributionService->deleteDistribution($distributionId);
+    
+    $_SESSION['flash_message'] = 'Distribution record deleted successfully';
+    $_SESSION['flash_type'] = 'success';
+}
+
+/**
+ * Generate a carbon footprint report for a branch
+ */
+function generateBranchReport() {
+    global $container;
+    
+    // Validate input
+    $branchId = isset($_POST['branch_id']) ? (int)$_POST['branch_id'] : 0;
+    
+    if (empty($branchId)) {
+        throw new Exception('Branch ID is required');
+    }
+    
+    try {
+        // Get required services
+        $branchService = $container->get(BranchService::class);
+        $carbonFootprintService = $container->get(CarbonFootprintService::class);
+        $reportService = $container->get(ReportGenerationService::class);
+        
+        // Get branch
+        $branch = $branchService->getBranchById($branchId);
+        if (!$branch) {
+            throw new Exception('Branch not found');
+        }
+        
+        // Get carbon footprint metrics for the branch
+        $metrics = $carbonFootprintService->getCarbonFootprintMetrics($branchId);
+        
+        // Generate the report
+        $result = $reportService->generateCarbonReport($metrics);
+        
+        if ($result) {
+            // Create relative path to the PDF file - fix the path structure
+            $reportFilename = 'branch_' . $branchId . '_report.pdf';
+            
+            // Use the correct URL path without leading 'public'
+            // The 'public' directory is typically the web root, so paths should be relative to it
+            $reportPath = '/reports/' . $reportFilename;
+            
+            // Add download link to session for display
+            $_SESSION['report_path'] = $reportPath;
+            $_SESSION['report_filename'] = $reportFilename;
+            $_SESSION['flash_message'] = 'Report generated successfully for ' . $branch->getLocation() . 
+                '. <a href="' . $reportPath . '" target="_blank" class="download-link">Download Report</a>';
+            $_SESSION['flash_type'] = 'success';
+        } else {
+            $_SESSION['flash_message'] = 'Failed to generate report';
+            $_SESSION['flash_type'] = 'danger';
+        }
+        
+    } catch (Exception $e) {
+        error_log("Report generation error: " . $e->getMessage());
+        $_SESSION['flash_message'] = 'Error generating report: ' . $e->getMessage();
+        $_SESSION['flash_type'] = 'danger';
+    }
+}
+
+/**
+ * Show an alert message
+ */
+function showAlert($message) {
+    $_SESSION['flash_message'] = $message;
+    $_SESSION['flash_type'] = 'danger';
+}
+
+/**
+ * Show an info message
+ */
+function showInfo($message) {
+    $_SESSION['flash_message'] = $message;
+    $_SESSION['flash_type'] = 'success';
+}
+?>

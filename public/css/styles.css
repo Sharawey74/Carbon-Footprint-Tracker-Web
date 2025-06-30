@@ -1,0 +1,83 @@
+/* Main Styles for Carbon Footprint Tracker */
+
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.navbar-brand img {
+    margin-right: 10px;
+}
+
+main {
+    flex: 1;
+}
+
+.card {
+    margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.card-header {
+    font-weight: bold;
+}
+
+.dashboard-card {
+    transition: transform 0.3s;
+}
+
+.dashboard-card:hover {
+    transform: translateY(-5px);
+}
+
+.chart-container {
+    position: relative;
+    height: 300px;
+    margin-bottom: 20px;
+}
+
+.data-entry-form label {
+    font-weight: 500;
+}
+
+.status-badge {
+    font-size: 0.9rem;
+}
+
+.status-draft {
+    background-color: #f8f9fa;
+    color: #6c757d;
+}
+
+.status-inprogress {
+    background-color: #cff4fc;
+    color: #055160;
+}
+
+.status-complete {
+    background-color: #d1e7dd;
+    color: #0f5132;
+}
+
+/* Custom notification styles */
+.notification-badge {
+    position: relative;
+}
+
+.notification-badge .badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+}
+
+/* RTL support for Arabic */
+html[dir="rtl"] {
+    text-align: right;
+}
+
+@media (max-width: 768px) {
+    .chart-container {
+        height: 250px;
+    }
+}

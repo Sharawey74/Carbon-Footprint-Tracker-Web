@@ -1,0 +1,34 @@
+# Redirect all requests to the public directory except dashboard.php
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Don't redirect dashboard.php
+    RewriteRule ^dashboard\.php$ - [L]
+    
+    # If the requested path is not a file or directory
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    
+    # Redirect to public directory
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+# Enable Cross-Origin Resource Sharing
+<IfModule mod_headers.c>
+    Header set Access-Control-Allow-Origin "*"
+    Header set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+    Header set Access-Control-Allow-Headers "Content-Type, Authorization"
+</IfModule>
+
+# Set default character set
+AddDefaultCharset UTF-8
+
+# PHP settings
+<IfModule mod_php8.c>
+    php_flag display_errors On
+    php_value max_execution_time 300
+    php_value memory_limit 256M
+    php_value post_max_size 20M
+    php_value upload_max_filesize 20M
+</IfModule>
