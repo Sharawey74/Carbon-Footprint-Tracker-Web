@@ -323,4 +323,3 @@ This project is proprietary and confidential. All rights reserved.
 
 **© 2024 Carbon Footprint Tracker** - Sustainable Coffee Operations Management
 
-*Built with ❤️ for environmental sustainability in the Egyptian coffee industry*
